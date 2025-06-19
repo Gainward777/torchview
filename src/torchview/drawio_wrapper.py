@@ -33,6 +33,68 @@ class StyledComputationGraph(ComputationGraph):
         "AttentionGate": "#fff2cc",
     }
 
+    def __init__(
+        self,
+        visual_graph: graphviz.Digraph,
+        root_container: Any,
+        show_shapes: bool = False,
+        expand_nested: bool = False,
+        hide_inner_tensors: bool = True,
+        hide_module_functions: bool = True,
+        roll: bool = False,
+        depth: int | float = 3,
+        collect_attributes: bool = False,
+        *,
+        orientation: str = "vertical",
+        border_width: float = 2.0,
+        border_color: str = "#6c8ebf",
+        hide_ops: bool = False,
+    ) -> None:
+        super().__init__(
+            visual_graph,
+            root_container,
+            show_shapes,
+            expand_nested,
+            hide_inner_tensors,
+            hide_module_functions,
+            roll,
+            depth,
+            collect_attributes,
+        )
+        self.orientation = orientation
+        self.border_width = border_width
+        self.border_color = border_color
+        self.hide_ops = hide_ops
+
+    def get_node_label(self, node: TensorNode | ModuleNode | FunctionNode) -> str:  # type: ignore[override]
+        border = self.html_config["border"]
+        cell_sp = self.html_config["cell_spacing"]
+        cell_pad = self.html_config["cell_padding"]
+        cell_bor = self.html_config["cell_border"]
+
+        if isinstance(node, TensorNode):
+            shape_repr = " x ".join(str(s) for s in node.tensor_shape)
+            label = f"<\n<TABLE BORDER=\"{border}\" CELLBORDER=\"{cell_bor}\" CELLSPACING=\"{cell_sp}\" CELLPADDING=\"{cell_pad}\">" \
+                    f"<TR><TD>{node.name}</TD></TR>" \
+                    f"<TR><TD>{shape_repr}</TD></TR></TABLE>>"
+            return label
+
+        def _format_shape(shape: tuple[int, ...]) -> str:
+            if len(shape) >= 3:
+                return f"D{shape[0]} x F{shape[1]} x L{shape[2]}"
+            return " x ".join(str(s) for s in shape)
+
+        out_shapes = "<BR/>".join(_format_shape(s) for s in node.output_shape)
+        label = f"<\n<TABLE BORDER=\"{border}\" CELLBORDER=\"{cell_bor}\" CELLSPACING=\"{cell_sp}\" CELLPADDING=\"{cell_pad}\">" \
+                f"<TR><TD>{node.name}</TD></TR>" \
+                f"<TR><TD>{out_shapes}</TD></TR></TABLE>>"
+        return label
+
+    def is_node_visible(self, compute_node: TensorNode | ModuleNode | FunctionNode) -> bool:  # type: ignore[override]
+        if self.hide_ops and compute_node.name in {"unsqueeze", "squeeze", "cat"}:
+            return False
+        return super().is_node_visible(compute_node)
+
     def add_node(self, node: TensorNode | ModuleNode | FunctionNode, subgraph: graphviz.Digraph | None = None) -> None:  # type: ignore[override]
         if node.node_id not in self.id_dict:
             self.id_dict[node.node_id] = self.running_node_id
@@ -41,13 +103,16 @@ class StyledComputationGraph(ComputationGraph):
         node_color = self.get_node_color(node)
         if subgraph is None:
             subgraph = self.visual_graph
+        orientation_val = "90" if self.orientation == "vertical" else "0"
         subgraph.node(
             name=f"{self.id_dict[node.node_id]}",
             label=label,
             fillcolor=node_color,
-            color=node_color,
+            color=self.border_color,
+            penwidth=str(self.border_width),
             shape="box",
             style="rounded,filled",
+            orientation=orientation_val,
         )
         self.node_set.add(id(node))
 
@@ -81,6 +146,11 @@ def draw_graph_modern(
     filename: str | None = None,
     directory: str = ".",
     collect_attributes: bool = False,
+    *,
+    block_orientation: str = "vertical",
+    block_border_width: float = 2.0,
+    block_border_color: str = "#6c8ebf",
+    hide_ops: bool = False,
     **kwargs: Any,
 ) -> StyledComputationGraph:
     """Generate a modern styled visualization of a PyTorch model.
@@ -146,6 +216,10 @@ def draw_graph_modern(
         roll,
         depth,
         collect_attributes,
+        orientation=block_orientation,
+        border_width=block_border_width,
+        border_color=block_border_color,
+        hide_ops=hide_ops,
     )
 
     forward_prop(model, x, device, model_graph, model_mode, **kwargs_record_tensor)
