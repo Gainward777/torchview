@@ -19,10 +19,18 @@ from .computation_node import TensorNode, ModuleNode, FunctionNode
 class StyledComputationGraph(ComputationGraph):
     """ComputationGraph with a modern style for nodes and edges."""
 
-    NODE_COLORS = {
+    DEFAULT_NODE_COLORS = {
         TensorNode: "#f8cecc",
         ModuleNode: "#dae8fc",
         FunctionNode: "#d5e8d4",
+    }
+
+    MODULE_TYPE_COLORS = {
+        "Conv1d": "#dae8fc",
+        "ConvTranspose1d": "#d5e8d4",
+        "ResidualConvBlock": "#f8cecc",
+        "MultiScaleConvBlock": "#e1d5e7",
+        "AttentionGate": "#fff2cc",
     }
 
     def add_node(self, node: TensorNode | ModuleNode | FunctionNode, subgraph: graphviz.Digraph | None = None) -> None:  # type: ignore[override]
@@ -45,7 +53,11 @@ class StyledComputationGraph(ComputationGraph):
 
     @staticmethod
     def get_node_color(node: TensorNode | ModuleNode | FunctionNode) -> str:  # type: ignore[override]
-        return StyledComputationGraph.NODE_COLORS[type(node)]
+        if isinstance(node, ModuleNode):
+            return StyledComputationGraph.MODULE_TYPE_COLORS.get(
+                node.name, StyledComputationGraph.DEFAULT_NODE_COLORS[ModuleNode]
+            )
+        return StyledComputationGraph.DEFAULT_NODE_COLORS[type(node)]
 
 
 def draw_graph_modern(
@@ -60,10 +72,11 @@ def draw_graph_modern(
     strict: bool = True,
     expand_nested: bool = False,
     graph_dir: str | None = None,
+    graph_size: tuple[float, float] | None = None,
     hide_module_functions: bool = True,
     hide_inner_tensors: bool = True,
     roll: bool = False,
-    show_shapes: bool = True,
+    show_shapes: bool = False,
     save_graph: bool = False,
     filename: str | None = None,
     directory: str = ".",
@@ -91,6 +104,9 @@ def draw_graph_modern(
         "ordering": "in",
         "rankdir": graph_dir,
     }
+    if graph_size is not None:
+        width, height = graph_size
+        graph_attr["size"] = f"{width},{height}"
     node_attr = {
         "style": "rounded,filled",
         "shape": "box",
