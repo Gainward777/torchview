@@ -1,0 +1,231 @@
+from __future__ import annotations
+
+import graphviz
+import torch
+from torch import nn
+from typing import Any
+
+from .torchview import (
+    process_input,
+    forward_prop,
+    validate_user_params,
+    INPUT_DATA_TYPE,
+    INPUT_SIZE_TYPE,
+)
+from .computation_graph import ComputationGraph
+from .computation_node import TensorNode, ModuleNode, FunctionNode
+
+
+class StyledComputationGraph(ComputationGraph):
+    """ComputationGraph with a modern style for nodes and edges."""
+
+    DEFAULT_NODE_COLORS = {
+        TensorNode: "#f8cecc",
+        ModuleNode: "#dae8fc",
+        FunctionNode: "#d5e8d4",
+    }
+
+    MODULE_TYPE_COLORS = {
+        "Conv1d": "#dae8fc",
+        "ConvTranspose1d": "#d5e8d4",
+        "ResidualConvBlock": "#f8cecc",
+        "MultiScaleConvBlock": "#e1d5e7",
+        "AttentionGate": "#fff2cc",
+    }
+
+    def __init__(
+        self,
+        visual_graph: graphviz.Digraph,
+        root_container: Any,
+        show_shapes: bool = False,
+        expand_nested: bool = False,
+        hide_inner_tensors: bool = True,
+        hide_module_functions: bool = True,
+        roll: bool = False,
+        depth: int | float = 3,
+        collect_attributes: bool = False,
+        *,
+        orientation: str = "vertical",
+        border_width: float = 2.0,
+        border_color: str = "#6c8ebf",
+        hide_ops: bool = False,
+    ) -> None:
+        super().__init__(
+            visual_graph,
+            root_container,
+            show_shapes,
+            expand_nested,
+            hide_inner_tensors,
+            hide_module_functions,
+            roll,
+            depth,
+            collect_attributes,
+        )
+        self.orientation = orientation
+        self.border_width = border_width
+        self.border_color = border_color
+        self.hide_ops = hide_ops
+
+    def get_node_label(self, node: TensorNode | ModuleNode | FunctionNode) -> str:  # type: ignore[override]
+        border = self.html_config["border"]
+        cell_sp = self.html_config["cell_spacing"]
+        cell_pad = self.html_config["cell_padding"]
+        cell_bor = self.html_config["cell_border"]
+
+        if isinstance(node, TensorNode):
+            shape_repr = " x ".join(str(s) for s in node.tensor_shape)
+            label = f"<\n<TABLE BORDER=\"{border}\" CELLBORDER=\"{cell_bor}\" CELLSPACING=\"{cell_sp}\" CELLPADDING=\"{cell_pad}\">" \
+                    f"<TR><TD>{node.name}</TD></TR>" \
+                    f"<TR><TD>{shape_repr}</TD></TR></TABLE>>"
+            return label
+
+        def _format_shape(shape: tuple[int, ...]) -> str:
+            if len(shape) >= 3:
+                return f"D{shape[0]} x F{shape[1]} x L{shape[2]}"
+            return " x ".join(str(s) for s in shape)
+
+        out_shapes = "<BR/>".join(_format_shape(s) for s in node.output_shape)
+        label = f"<\n<TABLE BORDER=\"{border}\" CELLBORDER=\"{cell_bor}\" CELLSPACING=\"{cell_sp}\" CELLPADDING=\"{cell_pad}\">" \
+                f"<TR><TD>{node.name}</TD></TR>" \
+                f"<TR><TD>{out_shapes}</TD></TR></TABLE>>"
+        return label
+
+    def is_node_visible(self, compute_node: TensorNode | ModuleNode | FunctionNode) -> bool:  # type: ignore[override]
+        if self.hide_ops and compute_node.name in {"unsqueeze", "squeeze", "cat"}:
+            return False
+        return super().is_node_visible(compute_node)
+
+    def add_node(self, node: TensorNode | ModuleNode | FunctionNode, subgraph: graphviz.Digraph | None = None) -> None:  # type: ignore[override]
+        if node.node_id not in self.id_dict:
+            self.id_dict[node.node_id] = self.running_node_id
+            self.running_node_id += 1
+        label = self.get_node_label(node)
+        node_color = self.get_node_color(node)
+        if subgraph is None:
+            subgraph = self.visual_graph
+        orientation_val = "90" if self.orientation == "vertical" else "0"
+        subgraph.node(
+            name=f"{self.id_dict[node.node_id]}",
+            label=label,
+            fillcolor=node_color,
+            color=self.border_color,
+            penwidth=str(self.border_width),
+            shape="box",
+            style="rounded,filled",
+            orientation=orientation_val,
+        )
+        self.node_set.add(id(node))
+
+    @staticmethod
+    def get_node_color(node: TensorNode | ModuleNode | FunctionNode) -> str:  # type: ignore[override]
+        if isinstance(node, ModuleNode):
+            return StyledComputationGraph.MODULE_TYPE_COLORS.get(
+                node.name, StyledComputationGraph.DEFAULT_NODE_COLORS[ModuleNode]
+            )
+        return StyledComputationGraph.DEFAULT_NODE_COLORS[type(node)]
+
+
+def draw_graph_modern(
+    model: nn.Module,
+    input_data: INPUT_DATA_TYPE | None = None,
+    input_size: INPUT_SIZE_TYPE | None = None,
+    graph_name: str = "model",
+    depth: int | float = 3,
+    device: torch.device | str | None = None,
+    dtypes: list[torch.dtype] | None = None,
+    mode: str | None = None,
+    strict: bool = True,
+    expand_nested: bool = False,
+    graph_dir: str | None = None,
+    graph_size: tuple[float, float] | None = None,
+    hide_module_functions: bool = True,
+    hide_inner_tensors: bool = True,
+    roll: bool = False,
+    show_shapes: bool = False,
+    save_graph: bool = False,
+    filename: str | None = None,
+    directory: str = ".",
+    collect_attributes: bool = False,
+    *,
+    block_orientation: str = "vertical",
+    block_border_width: float = 2.0,
+    block_border_color: str = "#6c8ebf",
+    hide_ops: bool = False,
+    **kwargs: Any,
+) -> StyledComputationGraph:
+    """Generate a modern styled visualization of a PyTorch model.
+
+    This wrapper mirrors :func:`torchview.draw_graph` but returns a graph with
+    updated styling that resembles the diagram from the provided example.
+    """
+
+    if filename is None:
+        filename = f"{graph_name}.gv"
+
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model_mode = "eval" if mode is None else mode
+    graph_dir = "TB" if graph_dir is None else graph_dir
+
+    validate_user_params(model, input_data, input_size, depth, device, dtypes)
+
+    graph_attr = {
+        "ordering": "in",
+        "rankdir": graph_dir,
+    }
+    if graph_size is not None:
+        width, height = graph_size
+        graph_attr["size"] = f"{width},{height}"
+    node_attr = {
+        "style": "rounded,filled",
+        "shape": "box",
+        "align": "center",
+        "fontsize": "12",
+        "ranksep": "0.2",
+        "height": "0.3",
+        "fontname": "Helvetica",
+        "margin": "0.1",
+    }
+    edge_attr = {
+        "fontsize": "10",
+        "color": "#6c8ebf",
+    }
+    visual_graph = graphviz.Digraph(
+        name=graph_name,
+        engine="dot",
+        strict=strict,
+        graph_attr=graph_attr,
+        node_attr=node_attr,
+        edge_attr=edge_attr,
+        directory=directory,
+        filename=filename,
+    )
+
+    x, kwargs_record_tensor, input_nodes = process_input(
+        input_data, input_size, kwargs, device, dtypes, collect_attributes
+    )
+
+    model_graph = StyledComputationGraph(
+        visual_graph,
+        input_nodes,
+        show_shapes,
+        expand_nested,
+        hide_inner_tensors,
+        hide_module_functions,
+        roll,
+        depth,
+        collect_attributes,
+        orientation=block_orientation,
+        border_width=block_border_width,
+        border_color=block_border_color,
+        hide_ops=hide_ops,
+    )
+
+    forward_prop(model, x, device, model_graph, model_mode, **kwargs_record_tensor)
+
+    model_graph.fill_visual_graph()
+
+    if save_graph:
+        model_graph.visual_graph.render(format="png")
+    return model_graph
